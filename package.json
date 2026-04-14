@@ -1,0 +1,23 @@
+{
+  "name": "newspaper-segmentation",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "watch": "vite build --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@annotorious/openseadragon": "^3.8.0",
+    "@iiif/helpers": "^1.5.8",
+    "@iiif/parser": "^2.2.10",
+    "openseadragon": "^6.0.2"
+  },
+  "devDependencies": {
+    "vite": "^8.0.8"
+  }
+}

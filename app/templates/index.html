@@ -1,0 +1,13 @@
+<!-- app/templates/index.html -->
+% rebase('layout.html', title='Home')
+ <!-- views/index.tpl -->
+<h1>Hello </h1>
+
+<button id="start_annotating" onclick="draw(); return false;">Add article</button>
+<div id="viewer" style="width: 800px; height: 600px;"></div>
+
+<script>
+    window.addEventListener("DOMContentLoaded", () => {
+        openManifest("http://localhost:8080/manifests/manifest.json","https://iiif.io/api/cookbook/recipe/newspaper/canvas/p1")
+    })
+</script>
