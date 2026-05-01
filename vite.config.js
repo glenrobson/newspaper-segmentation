@@ -8,7 +8,9 @@ export default defineConfig({
     rollupOptions: {
       input: path.resolve(__dirname, 'src/main.js'),
       output: {
-        entryFileNames: 'main.js'
+        entryFileNames: 'main.js',
+        assetFileNames: (assetInfo) =>
+          assetInfo.name?.endsWith('.css') ? 'main.css' : '[name]-[hash][extname]'
       }
     }
   }

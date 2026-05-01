@@ -1,5 +1,5 @@
-<!-- app/templates/index.html -->
-% rebase('layout.html', title='Home')
+<!-- app/templates/segmentation.html -->
+% rebase('layout.html', title='Article editor')
 
 <style>
   .workspace {
@@ -221,6 +221,10 @@
 
 <script>
   window.addEventListener("DOMContentLoaded", () => {
-    openManifest("http://localhost:8080/manifests/manifest.json", "https://iiif.io/api/cookbook/recipe/newspaper/canvas/p1")
+    const params = new URLSearchParams(window.location.search);
+    const manifestUrl = params.get('iiif-content');
+    if (manifestUrl) {
+      openManifest(manifestUrl, null);
+    }
   })
 </script>

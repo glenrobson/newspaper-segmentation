@@ -1,8 +1,32 @@
-import { Vault, fetch as fetchIIIF } from '@iiif/helpers';
+import { Vault, getThumbnail } from '@iiif/helpers';
+
+const vault = new Vault();
+
+export async function getCanvases(manifestURL) {
+    const manifest = await vault.load(manifestURL);
+    if (!manifest) {
+        throw new Error('Manifest failed to load');
+    }
+
+    const canvases = [];
+    for (const canvasRef of manifest.items || []) {
+        const canvas = vault.get(canvasRef.id);
+
+        // Extract first available label string
+        const labelObj = canvas.label || {};
+        const labelValues = Object.values(labelObj);
+        const label = labelValues.length > 0 ? labelValues[0][0] : canvasRef.id;
+
+        // Use getThumbnail to get the best matching image at ~150px
+        const result = await getThumbnail(canvasRef, { vault, maxWidth: 150, maxHeight: 150 });
+        const thumbnailUrl = result.best?.id ?? null;
+
+        canvases.push({ id: canvas.id, label, thumbnailUrl });
+    }
+    return canvases;
+}
 
 export async function getImageURL(manifestURL, canvasId) {
-    const vault = new Vault();
-
     const manifest = await vault.load(manifestURL);
 
     if (!manifest) {
