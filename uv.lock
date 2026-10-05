@@ -97,16 +97,16 @@ wheels = [
 
 [[package]]
 name = "iiif2annos"
-version = "0.0.4"
+version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow" },
     { name = "pytesseract" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/36/2ece17fa74ea05573aef0cee612223c31e9c82909878435afe810bae9fd0/iiif2annos-0.0.4.tar.gz", hash = "sha256:2d14ad4ee533166286ff89eadbc1377a055057c76f4203064e0a0ca78e758963", size = 6125, upload-time = "2026-04-23T14:11:34.063Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/71/cb327eca1b43f6ba94ba04180b4dd8b9e82508357e8be7b95d0ebf83c874/iiif2annos-0.0.5.tar.gz", hash = "sha256:e59e58ac331fee808efdb5165df6479b3f350ed8b5fd709ea41e5d6b508d168e", size = 6276, upload-time = "2026-05-01T23:45:23.172Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/2a/863059c28779cd0fe43e2f30a8d4a14eeb57da67fc03439f53b8d1901e47/iiif2annos-0.0.4-py3-none-any.whl", hash = "sha256:f0742be5e0af681cca2844b918fda7f812775677a051c0bbe17149cb81d81e79", size = 5600, upload-time = "2026-04-23T14:11:32.908Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/e5/8a6307ab485639732c6ff5dc910f5dc7ae32c77dda8f7359ea3bca3d7774/iiif2annos-0.0.5-py3-none-any.whl", hash = "sha256:6c7d3bcf98aed90aed70aeea2a5299eef267d91b60b1f982a1cf6f7750c60c23", size = 5742, upload-time = "2026-05-01T23:45:21.886Z" },
 ]
 
 [[package]]

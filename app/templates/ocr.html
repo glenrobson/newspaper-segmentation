@@ -1,0 +1,28 @@
+<!-- app/templates/ocr.html -->
+% rebase('layout.html', title='OCR')
+
+<h1>OCR</h1>
+<p>Generate and review OCR for each article.</p>
+<div class="workspace">
+  <div id="viewer"></div>
+  <div class="panel panel--wide">
+    <label for="ocr-lang-select">Language</label>
+    <select id="ocr-lang-select"></select>
+    <button id="generate-all-ocr-btn" onclick="generateAllOCR()">Generate OCR</button>
+    <div id="ocr-progress"></div>
+    <h2>Articles</h2>
+    <ul id="article-list"></ul>
+  </div>
+</div>
+<div id="thumbnail-strip"></div>
+
+<script>
+  window.APP_MODE = 'ocr';
+  window.addEventListener("DOMContentLoaded", () => {
+    const params = new URLSearchParams(window.location.search);
+    const manifestUrl = params.get('iiif-content');
+    if (manifestUrl) {
+      openManifest(manifestUrl, null);
+    }
+  })
+</script>

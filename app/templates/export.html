@@ -1,0 +1,24 @@
+<!-- app/templates/export.html -->
+% rebase('layout.html', title='Export')
+
+<h1>Export</h1>
+<p>Export articles for this issue.</p>
+<div class="export-base-url">
+  <label for="export-base-url-input">Base URL</label>
+  <input type="text" id="export-base-url-input">
+</div>
+<div class="export-controls">
+  <button id="export-selected-btn" onclick="exportSelected()" disabled>Export</button>
+  <button class="export-select-btn" onclick="selectAllArticles()">Select all</button>
+  <button class="export-select-btn" onclick="selectNoArticles()">Select none</button>
+</div>
+<ul id="export-article-list"></ul>
+
+<script>
+  window.APP_MODE = 'export';
+  window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    const manifestUrl = params.get('iiif-content');
+    if (manifestUrl) initExportPage(manifestUrl);
+  });
+</script>

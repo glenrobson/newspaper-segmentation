@@ -62,8 +62,14 @@ export async function getImageURL(manifestURL, canvasId) {
 
             // Direct image body.
             if (resource?.type === "Image" && resource.service) {
-                console.log("Found image with service: " + resource.service[0].id);
-                return resource.service[0].id;
+                if (resource.service[0].id) {
+                    console.log("Found image with service: " + resource.service[0].id);
+                    return resource.service[0].id;
+                } else {
+                    console.log("Found image with service: " + resource.service[0]["@id"]);
+                    return resource.service[0]["@id"];
+
+                }    
             }
         }
     }

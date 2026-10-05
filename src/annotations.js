@@ -19,6 +19,8 @@ let currentOCRAnnotations = [];
 let ocrVisible = true;
 let ocrPopupAnnotation = null;
 let ocrPopupEl = null;
+let currentRegionsViewer = null;
+let currentTargetRegionsViewer = null;
 
 function bindShiftHandlers(viewer, anno) {
   if (keyHandlersBound) {
@@ -299,6 +301,7 @@ async function toggleArticleText(id, li, btn) {
 }
 
 function updateArticleRowOCRState(articleId, hasOCR) {
+  if (window.APP_MODE !== 'ocr') return;
   const li = document.querySelector(`#article-list li[data-article-id="${articleId}"]`);
   if (!li) return;
   const row = li.querySelector('.article-row');
@@ -311,21 +314,6 @@ function updateArticleRowOCRState(articleId, hasOCR) {
   // Remove existing OCR action button and chevron
   existing?.remove();
   row.querySelector('.article-text-btn')?.remove();
-
-  const btn = document.createElement('button');
-  btn.className = 'ocr-action-btn';
-  if (hasOCR) {
-    btn.classList.add('ocr-toggle-btn');
-    btn.title = 'Toggle OCR';
-    btn.innerHTML = '<i class="fa-solid fa-eye"></i>';
-    btn.addEventListener('click', (e) => { e.stopPropagation(); toggleOCR(articleId); });
-  } else {
-    btn.classList.add('ocr-generate-btn');
-    btn.title = 'Generate OCR';
-    btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
-    btn.addEventListener('click', (e) => { e.stopPropagation(); generateOCR(articleId, btn); });
-  }
-  row.appendChild(btn);
 
   if (hasOCR) {
     const chevronBtn = document.createElement('button');
@@ -361,26 +349,10 @@ function buildArticleRow(li, id, title, hasOCR = false) {
     enterEditMode(li, id, a.textContent);
   });
 
-  // OCR action button (eye if hasOCR, wand if not)
-  const ocrBtn = document.createElement('button');
-  ocrBtn.className = 'ocr-action-btn';
-  if (hasOCR) {
-    ocrBtn.classList.add('ocr-toggle-btn');
-    ocrBtn.title = 'Toggle OCR';
-    ocrBtn.innerHTML = '<i class="fa-solid fa-eye"></i>';
-    ocrBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleOCR(id); });
-  } else {
-    ocrBtn.classList.add('ocr-generate-btn');
-    ocrBtn.title = 'Generate OCR';
-    ocrBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
-    ocrBtn.addEventListener('click', (e) => { e.stopPropagation(); generateOCR(id, ocrBtn); });
-  }
-
   row.appendChild(a);
   row.appendChild(editBtn);
-  row.appendChild(ocrBtn);
 
-  if (hasOCR) {
+  if (window.APP_MODE === 'ocr' && hasOCR) {
     const chevronBtn = document.createElement('button');
     chevronBtn.className = 'ocr-action-btn article-text-btn';
     chevronBtn.title = 'Show article text';
@@ -440,6 +412,7 @@ function appendArticleToList(id, title, select = false, hasOCR = false) {
   const list = document.getElementById('article-list');
   const li = document.createElement('li');
   li.dataset.articleId = id;
+  li.dataset.canvasId = currentCanvasId;
   buildArticleRow(li, id, title, hasOCR);
   list.appendChild(li);
 
@@ -451,6 +424,19 @@ function appendArticleToList(id, title, select = false, hasOCR = false) {
 }
 
 async function loadArticle(id, listItem) {
+  if (window.APP_MODE === 'linking') {
+    // On linking page: no OSD viewer — just select article and show regions
+    document.querySelectorAll('#article-list li.selected')
+      .forEach(el => el.classList.remove('selected'));
+    listItem.classList.add('selected');
+    currentArticleId = id;
+    const canvasId = listItem.dataset.canvasId;
+    showArticleRegions(id, canvasId);
+    showAllManifestLinks();
+    updateAddLinkBtn();
+    return;
+  }
+
   // Hide any open text panels and reset their chevrons
   document.querySelectorAll('#article-list .article-text-panel').forEach(panel => {
     panel.style.display = 'none';
@@ -460,8 +446,10 @@ async function loadArticle(id, listItem) {
 
   viewAllMode = false;
   const showAllBtn = document.getElementById('show-all-btn');
-  showAllBtn.textContent = 'Show all regions';
-  showAllBtn.classList.remove('active');
+  if (showAllBtn) {
+    showAllBtn.textContent = 'Show all regions';
+    showAllBtn.classList.remove('active');
+  }
 
   const response = await fetch(`/api/annotations/${id}`);
   const data = await response.json();
@@ -473,7 +461,7 @@ async function loadArticle(id, listItem) {
     .forEach(el => el.classList.remove('selected'));
   listItem.classList.add('selected');
 
-  loadOCRAnnotations(id);
+  if (window.APP_MODE === 'ocr') loadOCRAnnotations(id);
 }
 
 async function loadArticles() {
@@ -581,6 +569,61 @@ async function generateOCR(articleId, triggerBtn) {
   }
 }
 
+async function loadLanguages(manifestUrl) {
+  const select = document.getElementById('ocr-lang-select');
+  if (!select) return;
+  const res = await fetch('/api/languages');
+  const langs = await res.json();
+  select.innerHTML = langs.map(l => `<option value="${l}">${l}</option>`).join('');
+  const saved = localStorage.getItem('ocr_lang_' + manifestUrl);
+  if (saved && langs.includes(saved)) select.value = saved;
+}
+
+async function generateAllOCR() {
+  if (!currentManifestUrl) return;
+
+  const btn = document.getElementById('generate-all-ocr-btn');
+  const progressEl = document.getElementById('ocr-progress');
+  const lang = document.getElementById('ocr-lang-select')?.value || null;
+
+  if (lang) localStorage.setItem('ocr_lang_' + currentManifestUrl, lang);
+
+  btn.disabled = true;
+
+  const canvases = cachedCanvases || await getCanvases(currentManifestUrl);
+
+  for (let ci = 0; ci < canvases.length; ci++) {
+    const canvas = canvases[ci];
+    const articlesRes = await fetch(`/api/articles?canvasId=${encodeURIComponent(canvas.id)}`);
+    const articles = await articlesRes.json();
+
+    for (let ai = 0; ai < articles.length; ai++) {
+      const article = articles[ai];
+      progressEl.textContent =
+        `Page ${ci + 1} of ${canvases.length} — article ${ai + 1} of ${articles.length}: "${article.title}"`;
+
+      const annoRes = await fetch(`/api/annotations/${article.id}`);
+      const data = await annoRes.json();
+
+      for (const annotation of data.annotations) {
+        const selector = annotation?.target?.selector?.value ?? '';
+        const m = selector.match(/xywh=pixel:([\d.]+),([\d.]+),([\d.]+),([\d.]+)/);
+        if (!m) continue;
+        const region = `${Math.round(m[1])},${Math.round(m[2])},${Math.round(m[3])},${Math.round(m[4])}`;
+        await fetch(`/api/ocr/${article.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ annotationId: annotation.id, region, lang }),
+        });
+      }
+    }
+  }
+
+  progressEl.textContent = 'Done.';
+  btn.disabled = false;
+  await loadArticles();
+}
+
 async function showAllAnnotations() {
   if (!currentAnno || !currentCanvasId) return;
 
@@ -648,6 +691,13 @@ async function renderThumbnailStrip(manifestUrl, activeCanvasId) {
 async function openManifest(manifestUrl, canvasId) {
   console.log('Opening ' + manifestUrl);
 
+  // If no canvas specified, default to the first canvas in the manifest
+  if (!canvasId) {
+    const canvases = await getCanvases(manifestUrl);
+    if (!canvases.length) { console.error('No canvases found in manifest'); return; }
+    canvasId = canvases[0].id;
+  }
+
   if (currentViewer) {
     if (currentAnno) currentAnno.setAnnotations([]);
     if (currentViewer.__shiftCleanup) currentViewer.__shiftCleanup();
@@ -663,13 +713,17 @@ async function openManifest(manifestUrl, canvasId) {
   ocrPopupEl = null;
   ocrPopupAnnotation = null;
 
-  document.getElementById('new-article-form').style.display = 'none';
-  document.getElementById('new-article-btn').style.display = '';
+  const newArticleForm = document.getElementById('new-article-form');
+  if (newArticleForm) newArticleForm.style.display = 'none';
+  const newArticleBtn = document.getElementById('new-article-btn');
+  if (newArticleBtn) newArticleBtn.style.display = '';
 
   viewAllMode = false;
   const showAllBtn = document.getElementById('show-all-btn');
-  showAllBtn.textContent = 'Show all regions';
-  showAllBtn.classList.remove('active');
+  if (showAllBtn) {
+    showAllBtn.textContent = 'Show all regions';
+    showAllBtn.classList.remove('active');
+  }
 
   currentManifestId = manifestUrl;
   currentCanvasId = canvasId;
@@ -689,6 +743,7 @@ async function openManifest(manifestUrl, canvasId) {
   const viewer = OpenSeadragon({
     element: document.getElementById('viewer'),
     tileSources: [image_id],
+    drawer: 'canvas',
   });
 
   const anno = createOSDAnnotator(viewer, {
@@ -728,12 +783,14 @@ async function openManifest(manifestUrl, canvasId) {
   viewer.element.style.position = 'relative';
   viewer.element.appendChild(deleteBtn);
 
-  // OCR popup
-  ocrPopupEl = document.createElement('div');
-  ocrPopupEl.id = 'ocr-popup';
-  ocrPopupEl.addEventListener('mousedown', (e) => e.stopPropagation());
-  ocrPopupEl.addEventListener('click', (e) => e.stopPropagation());
-  viewer.element.appendChild(ocrPopupEl);
+  // OCR popup (only on OCR page)
+  if (window.APP_MODE === 'ocr') {
+    ocrPopupEl = document.createElement('div');
+    ocrPopupEl.id = 'ocr-popup';
+    ocrPopupEl.addEventListener('mousedown', (e) => e.stopPropagation());
+    ocrPopupEl.addEventListener('click', (e) => e.stopPropagation());
+    viewer.element.appendChild(ocrPopupEl);
+  }
 
   function positionDeleteButton(annotation) {
     const selectorValue = annotation?.target?.selector?.value;
@@ -758,25 +815,25 @@ async function openManifest(manifestUrl, canvasId) {
   anno.on('selectionChanged', (selected) => {
     if (selected && selected.length > 0) {
       const ann = selected[0];
-      if (ann.motivation === 'supplementing') {
+      if (window.APP_MODE === 'ocr' && ann.motivation === 'supplementing') {
         showOCRPopup(ann);
         deleteBtn.style.display = 'none';
         currentSelectedAnnotation = null;
       } else if (!viewAllMode) {
-        hideOCRPopup();
+        if (window.APP_MODE === 'ocr') hideOCRPopup();
         currentSelectedAnnotation = ann;
         positionDeleteButton(ann);
       }
     } else {
       currentSelectedAnnotation = null;
       deleteBtn.style.display = 'none';
-      hideOCRPopup();
+      if (window.APP_MODE === 'ocr') hideOCRPopup();
     }
   });
 
   viewer.addHandler('update-viewport', () => {
     if (currentSelectedAnnotation) positionDeleteButton(currentSelectedAnnotation);
-    if (ocrPopupAnnotation) positionOCRPopup(ocrPopupAnnotation);
+    if (window.APP_MODE === 'ocr' && ocrPopupAnnotation) positionOCRPopup(ocrPopupAnnotation);
   });
 
   deleteBtn.addEventListener('mousedown', (e) => {
@@ -812,6 +869,235 @@ async function openManifest(manifestUrl, canvasId) {
 
   loadArticles();
   renderThumbnailStrip(manifestUrl, canvasId);
+  if (window.APP_MODE === 'ocr') loadLanguages(manifestUrl);
+}
+
+// ── Linking page functions ──────────────────────────────────────────────────
+
+async function initLinkingPage(manifestUrl) {
+  currentManifestUrl = manifestUrl;
+  cachedCanvases = await getCanvases(manifestUrl);
+
+  const sourcePageSelect = document.getElementById('source-page-select');
+  const pageSelect = document.getElementById('target-page-select');
+  cachedCanvases.forEach(canvas => {
+    const opt = document.createElement('option');
+    opt.value = canvas.id;
+    opt.textContent = canvas.label;
+    pageSelect.appendChild(opt);
+
+    const srcOpt = document.createElement('option');
+    srcOpt.value = canvas.id;
+    srcOpt.textContent = canvas.label;
+    sourcePageSelect.appendChild(srcOpt);
+  });
+  pageSelect.addEventListener('change', () => {
+    if (currentTargetRegionsViewer) { currentTargetRegionsViewer.destroy(); currentTargetRegionsViewer = null; }
+    document.getElementById('target-regions').innerHTML = '';
+    if (pageSelect.value) loadTargetArticles(pageSelect.value);
+  });
+  sourcePageSelect.addEventListener('change', async () => {
+    if (!sourcePageSelect.value) return;
+    currentCanvasId = sourcePageSelect.value;
+    await loadArticles();
+    const firstLi = document.querySelector('#article-list li');
+    if (firstLi) loadArticle(firstLi.dataset.articleId, firstLi);
+  });
+
+  document.getElementById('target-article-select').addEventListener('change', () => {
+    updateAddLinkBtn();
+    const articleId = document.getElementById('target-article-select').value;
+    const canvasId = document.getElementById('target-page-select').value;
+    showTargetArticleRegions(articleId, canvasId);
+  });
+
+  if (cachedCanvases.length) {
+    currentCanvasId = cachedCanvases[0].id;
+    sourcePageSelect.value = currentCanvasId;
+    await loadArticles();
+    const firstLi = document.querySelector('#article-list li');
+    if (firstLi) loadArticle(firstLi.dataset.articleId, firstLi);
+    showAllManifestLinks();
+  }
+}
+
+function updateAddLinkBtn() {
+  const btn = document.getElementById('add-link-btn');
+  if (!btn) return;
+  const targetId = document.getElementById('target-article-select')?.value;
+  btn.disabled = !currentArticleId || !targetId || targetId === currentArticleId;
+}
+
+function sortRegionsReadingOrder(regions) {
+  // Mirror of Python _sort_boxes_reading_order: union-find clustering by
+  // horizontal overlap (>20% of narrower width), columns sorted left-to-right,
+  // within each column sorted top-to-bottom.
+  const n = regions.length;
+  if (n <= 1) return regions;
+  const group = regions.map((_, i) => i);
+  function find(i) {
+    while (group[i] !== i) { group[i] = group[group[i]]; i = group[i]; }
+    return i;
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = regions[i], b = regions[j];
+      const overlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      if (overlap > Math.min(a.w, b.w) * 0.2) group[find(i)] = find(j);
+    }
+  }
+  const cols = {};
+  regions.forEach((r, i) => { const root = find(i); (cols[root] = cols[root] || []).push(r); });
+  return Object.values(cols)
+    .sort((a, b) => Math.min(...a.map(r => r.x)) - Math.min(...b.map(r => r.x)))
+    .flatMap(col => col.slice().sort((a, b) => a.y - b.y));
+}
+
+async function showArticleRegions(articleId, canvasId) {
+  if (currentRegionsViewer) { currentRegionsViewer.destroy(); currentRegionsViewer = null; }
+  const container = document.getElementById('article-regions');
+  container.innerHTML = '';
+
+  const [annoRes, imageBase] = await Promise.all([
+    fetch(`/api/annotations/${articleId}`).then(r => r.json()),
+    getImageURL(currentManifestUrl, canvasId).then(url => url.replace(/\/info\.json$/, '')),
+  ]);
+
+  const regions = annoRes.annotations.flatMap(annotation => {
+    const sel = annotation?.target?.selector?.value ?? '';
+    const m = sel.match(/xywh=pixel:([\d.]+),([\d.]+),([\d.]+),([\d.]+)/);
+    if (!m) return [];
+    const [x, y, w, h] = m.slice(1).map(v => Math.round(parseFloat(v)));
+    return [{ x, y, w, h }];
+  });
+
+  const sorted = sortRegionsReadingOrder(regions);
+  if (!sorted.length) { container.textContent = 'No regions'; return; }
+
+  const tileSources = sorted.map(({ x, y, w, h }) => ({
+    type: 'image',
+    url: `${imageBase}/${x},${y},${w},${h}/max/0/default.jpg`,
+  }));
+
+  currentRegionsViewer = OpenSeadragon({
+    element: container,
+    sequenceMode: true,
+    tileSources,
+    prefixUrl: '/images/',
+    showNavigationControl: true,
+    showSequenceControl: true,
+    showRotationControl: false,
+    showFlipControl: false,
+    drawer: 'canvas',
+  });
+
+  currentRegionsViewer.addHandler('open', () => {
+    console.log('Regions viewer opened');
+    currentRegionsViewer.updateSize();
+    currentRegionsViewer.viewport.goHome(true);
+    currentRegionsViewer.forceRedraw();
+  });
+}
+
+async function showTargetArticleRegions(articleId, canvasId) {
+  if (currentTargetRegionsViewer) { currentTargetRegionsViewer.destroy(); currentTargetRegionsViewer = null; }
+  const container = document.getElementById('target-regions');
+  container.innerHTML = '';
+  if (!articleId || !canvasId) return;
+
+  const [annoRes, imageBase] = await Promise.all([
+    fetch(`/api/annotations/${articleId}`).then(r => r.json()),
+    getImageURL(currentManifestUrl, canvasId).then(url => url.replace(/\/info\.json$/, '')),
+  ]);
+
+  const regions = annoRes.annotations.flatMap(annotation => {
+    const sel = annotation?.target?.selector?.value ?? '';
+    const m = sel.match(/xywh=pixel:([\d.]+),([\d.]+),([\d.]+),([\d.]+)/);
+    if (!m) return [];
+    const [x, y, w, h] = m.slice(1).map(v => Math.round(parseFloat(v)));
+    return [{ x, y, w, h }];
+  });
+
+  const sorted = sortRegionsReadingOrder(regions);
+  if (!sorted.length) { container.textContent = 'No regions'; return; }
+
+  const tileSources = sorted.map(({ x, y, w, h }) => ({
+    type: 'image',
+    url: `${imageBase}/${x},${y},${w},${h}/max/0/default.jpg`,
+  }));
+
+  currentTargetRegionsViewer = OpenSeadragon({
+    element: container,
+    sequenceMode: true,
+    tileSources,
+    prefixUrl: '/images/',
+    showNavigationControl: true,
+    showSequenceControl: true,
+    showRotationControl: false,
+    showFlipControl: false,
+    drawer: 'canvas',
+  });
+
+  currentTargetRegionsViewer.addHandler('open', () => {
+    currentTargetRegionsViewer.updateSize();
+    currentTargetRegionsViewer.viewport.goHome(true);
+    currentTargetRegionsViewer.forceRedraw();
+  });
+}
+
+async function loadTargetArticles(canvasId) {
+  const articleSelect = document.getElementById('target-article-select');
+  articleSelect.innerHTML = '<option value="">— select article —</option>';
+  const res = await fetch(`/api/articles?canvasId=${encodeURIComponent(canvasId)}`);
+  const articles = await res.json();
+  articles.forEach(({ id, title }) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = title;
+    articleSelect.appendChild(opt);
+  });
+  updateAddLinkBtn();
+}
+
+async function showAllManifestLinks() {
+  const list = document.getElementById('current-links-list');
+  const res = await fetch(`/api/links?manifest=${encodeURIComponent(currentManifestUrl)}`);
+  const entries = await res.json();
+
+  if (!entries.length) {
+    list.innerHTML = '<li style="font-size:0.85rem;color:#888;background:none;padding:0">None</li>';
+    return;
+  }
+  list.innerHTML = entries.map(group => `
+    <li>
+      <span>${group.links.map(l => (l.canvasLabel ? l.canvasLabel + ' \u2014 ' : '') + l.title).join(' \u2194 ')}</span>
+      <button class="remove-link-btn" onclick="removeArticleGroup('${group.id}')" title="Remove link">&times;</button>
+    </li>
+  `).join('');
+}
+
+async function addArticleLink() {
+  const articleSelect = document.getElementById('target-article-select');
+  const pageSelect = document.getElementById('target-page-select');
+  const linkedId = articleSelect.value;
+  const linkedCanvasId = pageSelect.value;
+  const linkedCanvasLabel = cachedCanvases.find(c => c.id === linkedCanvasId)?.label ?? '';
+  const sourceCanvasLabel = cachedCanvases.find(c => c.id === currentCanvasId)?.label ?? '';
+
+  await fetch(`/api/articles/${currentArticleId}/link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ linkedId, linkedCanvasLabel, sourceCanvasLabel, manifestUrl: currentManifestUrl }),
+  });
+
+  articleSelect.value = '';
+  updateAddLinkBtn();
+  showAllManifestLinks();
+}
+
+async function removeArticleGroup(groupId) {
+  await fetch(`/api/links/${groupId}?manifest=${encodeURIComponent(currentManifestUrl)}`, { method: 'DELETE' });
+  showAllManifestLinks();
 }
 
 window.openManifest = openManifest;
@@ -819,3 +1105,127 @@ window.startNewArticle = startNewArticle;
 window.saveArticle = saveArticle;
 window.showAllAnnotations = showAllAnnotations;
 window.generateOCR = generateOCR;
+window.generateAllOCR = generateAllOCR;
+window.initLinkingPage = initLinkingPage;
+window.addArticleLink = addArticleLink;
+window.removeArticleGroup = removeArticleGroup;
+
+async function initExportPage(manifestUrl) {
+  currentManifestUrl = manifestUrl;
+  const baseUrlInput = document.getElementById('export-base-url-input');
+  if (baseUrlInput) baseUrlInput.value = manifestUrl.replace(/\/[^/]+$/, '/');
+  cachedCanvases = await getCanvases(manifestUrl);
+
+  const allArticles = [];
+  for (const canvas of cachedCanvases) {
+    const res = await fetch(`/api/articles?canvasId=${encodeURIComponent(canvas.id)}`);
+    const articles = await res.json();
+    articles.forEach(a => allArticles.push({ ...a, canvasId: canvas.id, canvasLabel: canvas.label }));
+  }
+
+  const linksRes = await fetch(`/api/links?manifest=${encodeURIComponent(manifestUrl)}`);
+  const groups = await linksRes.json();
+
+  const linkedIds = new Set(groups.flatMap(g => g.links.map(l => l.id)));
+
+  const rows = [];
+  groups.forEach(g => rows.push({ type: 'group', group: g }));
+  allArticles.forEach(a => { if (!linkedIds.has(a.id)) rows.push({ type: 'standalone', article: a }); });
+
+  // Sort by first canvas index in the manifest
+  const canvasIndexByLabel = new Map(cachedCanvases.map((c, i) => [c.label, i]));
+  function firstPageIndex(row) {
+    if (row.type === 'group') {
+      return Math.min(...row.group.links.map(l => canvasIndexByLabel.get(l.canvasLabel) ?? Infinity));
+    }
+    return canvasIndexByLabel.get(row.article.canvasLabel) ?? Infinity;
+  }
+  rows.sort((a, b) => firstPageIndex(a) - firstPageIndex(b));
+
+  const list = document.getElementById('export-article-list');
+  if (!rows.length) {
+    list.innerHTML = '<li style="color:#888;border:none;padding:4px 0">No articles found.</li>';
+    return;
+  }
+
+  list.innerHTML = rows.map((row, i) => {
+    if (row.type === 'group') {
+      const g = row.group;
+      const pages = g.links.map(l => l.canvasLabel).filter(Boolean).join(', ');
+      const ids = JSON.stringify(g.links.map(l => l.id));
+      return `<li data-ids='${ids}' onclick="toggleExportRow(this)">
+        <input type="checkbox" class="export-checkbox" onclick="event.stopPropagation();toggleExportRow(this.closest('li'))">
+        <div class="article-info">
+          <span class="article-title">${g.title}</span>
+          ${pages ? `<span class="article-pages">${pages}</span>` : ''}
+        </div>
+      </li>`;
+    } else {
+      const a = row.article;
+      const ids = JSON.stringify([a.id]);
+      return `<li data-ids='${ids}' onclick="toggleExportRow(this)">
+        <input type="checkbox" class="export-checkbox" onclick="event.stopPropagation();toggleExportRow(this.closest('li'))">
+        <div class="article-info">
+          <span class="article-title">${a.title}</span>
+          ${a.canvasLabel ? `<span class="article-pages">${a.canvasLabel}</span>` : ''}
+        </div>
+      </li>`;
+    }
+  }).join('');
+}
+
+function toggleExportRow(li) {
+  const cb = li.querySelector('.export-checkbox');
+  const checked = !cb.checked;
+  cb.checked = checked;
+  li.classList.toggle('selected', checked);
+  const btn = document.getElementById('export-selected-btn');
+  if (btn) btn.disabled = document.querySelectorAll('.export-checkbox:checked').length === 0;
+}
+
+function selectAllArticles() {
+  document.querySelectorAll('#export-article-list li').forEach(li => {
+    li.querySelector('.export-checkbox').checked = true;
+    li.classList.add('selected');
+  });
+  const btn = document.getElementById('export-selected-btn');
+  if (btn) btn.disabled = false;
+}
+
+function selectNoArticles() {
+  document.querySelectorAll('#export-article-list li').forEach(li => {
+    li.querySelector('.export-checkbox').checked = false;
+    li.classList.remove('selected');
+  });
+  const btn = document.getElementById('export-selected-btn');
+  if (btn) btn.disabled = true;
+}
+
+async function exportSelected() {
+  const articleIds = [];
+  document.querySelectorAll('#export-article-list li.selected').forEach(li => {
+    articleIds.push(...JSON.parse(li.dataset.ids));
+  });
+  if (!articleIds.length) return;
+  const baseUrl = document.getElementById('export-base-url-input')?.value ?? '';
+
+  const res = await fetch('/api/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifestUrl: currentManifestUrl, articleIds, baseUrl }),
+  });
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'export.zip';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+window.initExportPage = initExportPage;
+window.toggleExportRow = toggleExportRow;
+window.selectAllArticles = selectAllArticles;
+window.selectNoArticles = selectNoArticles;
+window.exportSelected = exportSelected;

@@ -1,226 +1,54 @@
 <!-- app/templates/index.html -->
-% rebase('layout.html', title='Home')
+% rebase('layout.html', title='Newspaper Segmentation')
 
-<style>
-  .workspace {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
-  }
-  #viewer {
-    flex: 1;
-    height: 600px;
-  }
-  .panel {
-    width: 280px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .panel h2 {
-    margin: 0 0 4px;
-    font-size: 1rem;
-  }
-  .panel input[type="text"] {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 6px 8px;
-  }
-  .panel button {
-    padding: 6px 12px;
-  }
-  #article-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  #article-list li {
-    padding: 4px 8px;
-    border-radius: 4px;
-  }
-  #article-list li.selected {
-    background: #dce8ff;
-    font-weight: bold;
-  }
-  #article-list li a {
-    text-decoration: none;
-    color: inherit;
-    flex: 1;
-  }
-  #article-list li a:hover {
-    text-decoration: underline;
-  }
-  .article-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .ocr-action-btn {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #555;
-    padding: 0 2px;
-    font-size: 0.8rem;
-    flex-shrink: 0;
-    display: inline-flex;
-  }
-  .ocr-action-btn:hover {
-    color: #1a6fcc;
-  }
-  .ocr-toggle-btn.ocr-hidden {
-    color: #aaa;
-  }
-  .edit-btn {
-    display: none;
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #555;
-    padding: 0 2px;
-    font-size: 0.8rem;
-    flex-shrink: 0;
-  }
-  #article-list li.selected .edit-btn {
-    display: inline-flex;
-  }
-  .edit-btn:hover {
-    color: #1a6fcc;
-  }
-  .article-row input[type="text"] {
-    flex: 1;
-    padding: 2px 4px;
-    font-size: inherit;
-    min-width: 0;
-  }
-  .save-title-btn {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #1a6fcc;
-    padding: 0 2px;
-    flex-shrink: 0;
-  }
-  #new-article-form {
-    display: none;
-    flex-direction: column;
-    gap: 8px;
-  }
-  #show-all-btn.active {
-    background: #dce8ff;
-    font-weight: bold;
-  }
-  #thumbnail-strip {
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding: 8px 0;
-    margin-bottom: 8px;
-  }
-  #thumbnail-strip button {
-    flex-shrink: 0;
-    padding: 2px;
-    border: 3px solid transparent;
-    background: none;
-    cursor: pointer;
-    border-radius: 4px;
-  }
-  #thumbnail-strip button.selected {
-    border-color: #1a6fcc;
-  }
-  #thumbnail-strip img {
-    height: 100px;
-    display: block;
-  }
-  #ocr-popup {
-    display: none;
-    position: absolute;
-    transform: translateX(-50%);
-    background: #fff;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-    padding: 8px 10px;
-    z-index: 100;
-    max-width: 280px;
-    min-width: 100px;
-  }
-  .ocr-popup-text {
-    font-size: 0.85rem;
-    margin-bottom: 6px;
-    word-break: break-word;
-  }
-  .ocr-popup-input {
-    width: 100%;
-    box-sizing: border-box;
-    font-size: 0.85rem;
-    padding: 2px 4px;
-    margin-bottom: 6px;
-  }
-  .ocr-popup-actions {
-    display: flex;
-    gap: 4px;
-    justify-content: flex-end;
-  }
-  .ocr-popup-actions button {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #555;
-    padding: 2px 5px;
-    font-size: 0.85rem;
-  }
-  .ocr-popup-actions button:hover { color: #1a6fcc; }
-  .ocr-popup-delete:hover { color: #cc0000 !important; }
-  .article-text-panel {
-    margin-top: 6px;
-    padding: 6px 8px;
-    background: #f5f5f5;
-    border-radius: 4px;
-    font-size: 0.78rem;
-    line-height: 1.5;
-  }
-  .article-text-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    margin-bottom: 4px;
-  }
-  .article-text-copy {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: #555;
-    padding: 0 2px;
-    font-size: 0.8rem;
-  }
-  .article-text-copy:hover { color: #1a6fcc; }
-  .article-text-content {
-    max-height: 180px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-</style>
-<h1>Article editor</h1>
-<p>Hold down shift to draw a box.</p>
-<div class="workspace">
-  <div id="viewer"></div>
-  <div class="panel">
-    <button id="show-all-btn" onclick="showAllAnnotations()">Show all regions</button>
-    <h2>Articles</h2>
-    <ul id="article-list"></ul>
-    <div id="new-article-form">
-      <input id="article-title" type="text" placeholder="Article title">
-      <button onclick="saveArticle()">Save</button>
-    </div>
-    <button id="new-article-btn" onclick="startNewArticle()">New Article</button>
+
+<div class="home-wrap">
+  <h1>Newspaper Segmentation</h1>
+  <p>Enter a IIIF manifest URL or choose an example below.</p>
+
+  <div class="manifest-form">
+    <input id="manifest-url-input" type="text" placeholder="https://example.org/manifest.json">
+    <button onclick="goToManifest()">Open</button>
+  </div>
+
+  <div class="examples">
+    <h2>Examples</h2>
+    <ul class="example-list" id="example-list">
+      <li><em>Loading…</em></li>
+    </ul>
   </div>
 </div>
-<div id="thumbnail-strip"></div>
 
 <script>
-  window.addEventListener("DOMContentLoaded", () => {
-    openManifest("http://localhost:8080/manifests/manifest.json", "https://iiif.io/api/cookbook/recipe/newspaper/canvas/p1")
-  })
+  function goToManifest(url) {
+    const manifestUrl = url || document.getElementById('manifest-url-input').value.trim();
+    if (!manifestUrl) return;
+    window.location.href = '/segmentation?iiif-content=' + encodeURIComponent(manifestUrl);
+  }
+
+  document.getElementById('manifest-url-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') goToManifest();
+  });
+
+  async function loadExamples() {
+    const res = await fetch('/api/manifests');
+    const manifests = await res.json();
+    const list = document.getElementById('example-list');
+    if (manifests.length === 0) {
+      list.innerHTML = '<li><em>No local manifests found.</em></li>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const m of manifests) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = '#';
+      a.addEventListener('click', (e) => { e.preventDefault(); goToManifest(m.url); });
+      a.innerHTML = `<div class="manifest-label">${m.label}</div><div class="manifest-url">${m.url}</div>`;
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+  }
+
+  loadExamples();
 </script>

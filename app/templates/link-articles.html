@@ -1,0 +1,34 @@
+<!-- app/templates/link-articles.html -->
+% rebase('layout.html', title='Link Articles')
+
+<h1>Link Articles</h1>
+<p>Link articles that continue across pages.</p>
+<h3 class="current-links-heading">Current links</h3>
+<ul id="current-links-list"></ul>
+<div class="link-workspace">
+  <div class="link-panel" id="source-panel">
+    <h2>Article</h2>
+    <label for="source-page-select">Page</label>
+    <select id="source-page-select"><option value="">— loading —</option></select>
+    <ul id="article-list"></ul>
+    <div id="article-regions"></div>
+  </div>
+  <div class="link-panel" id="target-panel">
+    <h2>Link to</h2>
+    <button id="add-link-btn" onclick="addArticleLink()" disabled>Link</button>
+    <label for="target-page-select">Page</label>
+    <select id="target-page-select"><option value="">— select page —</option></select>
+    <label for="target-article-select">Article</label>
+    <select id="target-article-select"><option value="">— select article —</option></select>
+    <div id="target-regions"></div>
+  </div>
+</div>
+
+<script>
+  window.APP_MODE = 'linking';
+  window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    const manifestUrl = params.get('iiif-content');
+    if (manifestUrl) initLinkingPage(manifestUrl);
+  });
+</script>

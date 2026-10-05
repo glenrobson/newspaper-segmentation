@@ -5,14 +5,38 @@
     <title>{{title or "Newspaper Segmentation App"}}</title>
 
     <link rel="stylesheet" href="/js/main.css">
+    <link rel="stylesheet" href="/css/app.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
     <script type="module" src="/js/main.js"></script>
 </head>
 <body>
 
+    <nav id="workflow-nav"></nav>
     <main>
         {{!base}}   <!-- 👈 content goes here -->
     </main>
+
+    <script>
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const manifestUrl = params.get('iiif-content');
+      const nav = document.getElementById('workflow-nav');
+      if (!manifestUrl) { nav.style.display = 'none'; return; }
+
+      const STEPS = [
+        { label: 'Segmentation', path: '/segmentation', mode: 'segmentation' },
+        { label: 'OCR', path: '/ocr', mode: 'ocr' },
+        { label: 'Link Articles', path: '/link-articles', mode: 'linking' },
+        { label: 'Export', path: '/export', mode: 'export' },
+      ];
+
+      const qs = '?iiif-content=' + encodeURIComponent(manifestUrl);
+      nav.innerHTML = STEPS.map(function(s) {
+        const active = window.APP_MODE === s.mode ? ' class="active"' : '';
+        return '<a href="' + s.path + qs + '"' + active + '>' + s.label + '</a>';
+      }).join('');
+    })();
+    </script>
 
 <!--   <footer>
         <p>Footer</p>

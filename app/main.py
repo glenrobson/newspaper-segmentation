@@ -1,12 +1,14 @@
 # app/main.py
 from bottle import Bottle, run, response, request, template, TEMPLATE_PATH, static_file
-from iiif2annos.ocr import OCR
+from iiif2annos.ocr import OCR, get_languages
+from io import BytesIO
 import hashlib
 import json
 import os
 import re
 import requests
 import uuid
+import zipfile
 
 
 def _region_slug_for_annotation(annotation):
@@ -28,20 +30,45 @@ def _has_ocr(article, ocr_dir):
 def _sort_boxes_reading_order(boxes):
     """Sort region boxes in column-aware reading order.
 
-    Repeatedly takes the topmost unprocessed box, finds all boxes whose Y
-    range overlaps it (i.e. they sit in the same horizontal band / row of
-    columns), sorts that group left-to-right by X, emits them, then repeats.
+    Groups boxes into columns by horizontal overlap: two boxes belong to the
+    same column if their X extents overlap by more than 20% of the narrower
+    box's width.  Columns are then ordered left-to-right, and boxes within
+    each column are ordered top-to-bottom by Y.
+
+    This correctly handles the case where one column's region sits much higher
+    on the page than a region in the left column — the left column is still
+    read first.
     """
-    remaining = list(boxes)
+    n = len(boxes)
+    if n <= 1:
+        return list(boxes)
+
+    # Union-Find to cluster boxes into columns by horizontal overlap
+    group = list(range(n))
+
+    def find(i):
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = boxes[i], boxes[j]
+            overlap = min(a['x'] + a['w'], b['x'] + b['w']) - max(a['x'], b['x'])
+            if overlap > min(a['w'], b['w']) * 0.2:
+                group[find(i)] = find(j)
+
+    # Collect columns
+    cols = {}
+    for i in range(n):
+        root = find(i)
+        cols.setdefault(root, []).append(boxes[i])
+
+    # Sort columns left-to-right; within each column sort top-to-bottom
     ordered = []
-    while remaining:
-        top = min(remaining, key=lambda b: b['y'])
-        top_bottom = top['y'] + top['h']
-        row = [b for b in remaining if b['y'] < top_bottom and b['y'] + b['h'] > top['y']]
-        row.sort(key=lambda b: b['x'])
-        ordered.extend(row)
-        for b in row:
-            remaining.remove(b)
+    for col in sorted(cols.values(), key=lambda c: min(b['x'] for b in c)):
+        ordered.extend(sorted(col, key=lambda b: b['y']))
     return ordered
 
 
@@ -86,6 +113,8 @@ def create_app():
     BASE_DIR = os.path.dirname(__file__)
     ANNOTATIONS_DIR = os.path.join(BASE_DIR, '..', 'annotations')
     os.makedirs(ANNOTATIONS_DIR, exist_ok=True)
+    LINKS_DIR = os.path.join(BASE_DIR, '..', 'links')
+    os.makedirs(LINKS_DIR, exist_ok=True)
     OCR_DIR = os.path.join(BASE_DIR, '..', 'ocr')
     os.makedirs(OCR_DIR, exist_ok=True)
     TEMPLATE_PATH.insert(0, os.path.join(BASE_DIR, "templates"))
@@ -101,18 +130,70 @@ def create_app():
     def options_handler(path):
         return {}
 
+    MANIFESTS_DIR = os.path.join(BASE_DIR, '..', 'manifests')
+
     @app.route("/")
     def index():
         return template("index.html")
+
+    @app.route("/segmentation")
+    def segmentation():
+        return template("segmentation.html")
+
+    @app.route("/ocr")
+    def ocr():
+        return template("ocr.html")
+
+    @app.route("/link-articles")
+    def link_articles():
+        return template("link-articles.html")
+
+    @app.route("/export")
+    def export_page():
+        return template("export.html")
+
+    @app.route("/api/manifests")
+    def list_manifests():
+        manifests = []
+        if os.path.isdir(MANIFESTS_DIR):
+            for fname in sorted(os.listdir(MANIFESTS_DIR)):
+                if not fname.endswith('.json'):
+                    continue
+                fpath = os.path.join(MANIFESTS_DIR, fname)
+                try:
+                    with open(fpath) as f:
+                        manifest = json.load(f)
+                    label_obj = manifest.get('label', {})
+                    label = fname
+                    for lang_vals in label_obj.values():
+                        if lang_vals:
+                            label = lang_vals[0]
+                            break
+                    url = f"{request.urlparts.scheme}://{request.urlparts.netloc}/manifests/{fname}"
+                    manifests.append({'label': label, 'url': url})
+                except Exception:
+                    pass
+        response.content_type = 'application/json'
+        return json.dumps(manifests)
 
     @app.route("/health")
     def health():
         response.content_type = "application/json"
         return {"status": "ok"}
 
+    @app.route('/api/languages')
+    def list_languages():
+        langs = sorted(l for l in get_languages() if l != 'osd')
+        response.content_type = 'application/json'
+        return json.dumps(langs)
+
     @app.route('/js/<filename:path>')
     def serve_js(filename):
-        return static_file(filename, root='./app/static/js')    
+        return static_file(filename, root='./app/static/js')
+
+    @app.route('/css/<filename:path>')
+    def serve_css(filename):
+        return static_file(filename, root='./app/static/css')
 
     @app.route('/manifests/<filename:path>')
     def serve_manifests(filename):
@@ -191,6 +272,232 @@ def create_app():
         response.content_type = 'application/json'
         return json.dumps({'status': 'ok'})
 
+    def _links_path(manifest_url):
+        key = hashlib.md5(manifest_url.encode()).hexdigest()
+        return os.path.join(LINKS_DIR, key + '.json')
+
+    def _load_links(manifest_url):
+        path = _links_path(manifest_url)
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return json.load(f)
+
+    def _save_links(manifest_url, links):
+        with open(_links_path(manifest_url), 'w') as f:
+            json.dump(links, f, indent=2)
+
+    @app.route('/api/links', method='GET')
+    def get_links():
+        manifest_url = request.query.get('manifest', '')
+        links = _load_links(manifest_url) if manifest_url else []
+        response.content_type = 'application/json'
+        return json.dumps(links)
+
+    @app.route('/api/articles/<article_id>/link', method='POST')
+    def add_link(article_id):
+        data = request.json
+        linked_id = data['linkedId']
+        manifest_url = data.get('manifestUrl', '')
+        linked_canvas_label = data.get('linkedCanvasLabel', '')
+        source_canvas_label = data.get('sourceCanvasLabel', '')
+
+        a_path = os.path.join(ANNOTATIONS_DIR, article_id + '.json')
+        b_path = os.path.join(ANNOTATIONS_DIR, linked_id + '.json')
+        with open(a_path) as f:
+            a = json.load(f)
+        with open(b_path) as f:
+            b = json.load(f)
+
+        entries = _load_links(manifest_url)
+        group = next((e for e in entries if any(l['id'] == article_id for l in e['links'])), None)
+
+        if group is None:
+            group = {
+                'id': str(uuid.uuid4()),
+                'title': a['title'],
+                'links': [{'id': a['id'], 'title': a['title'], 'canvasLabel': source_canvas_label}],
+            }
+            entries.append(group)
+
+        if not any(l['id'] == linked_id for l in group['links']):
+            group['links'].append({'id': b['id'], 'title': b['title'], 'canvasLabel': linked_canvas_label})
+
+        _save_links(manifest_url, entries)
+        response.content_type = 'application/json'
+        return json.dumps({'status': 'ok'})
+
+    @app.route('/api/links/<group_id>', method='DELETE')
+    def delete_link_group(group_id):
+        manifest_url = request.query.get('manifest', '')
+        entries = _load_links(manifest_url)
+        entries = [e for e in entries if e['id'] != group_id]
+        _save_links(manifest_url, entries)
+        response.content_type = 'application/json'
+        return json.dumps({'status': 'ok'})
+
+    @app.route('/api/export', method='POST')
+    def export():
+        data = request.json
+        manifest_url = data.get('manifestUrl', '')
+        article_ids = data.get('articleIds', [])
+        base_url = data.get('baseUrl', '').rstrip('/')
+
+        manifest = requests.get(manifest_url).json()
+        structures = []
+        buf = BytesIO()
+
+        # Resolve article_ids into export units, merging linked articles
+        links = _load_links(manifest_url)
+        article_to_group = {
+            link['id']: group
+            for group in links
+            for link in group['links']
+        }
+        processed_group_ids = set()
+        export_units = []
+        for article_id in article_ids:
+            group = article_to_group.get(article_id)
+            if group and group['id'] not in processed_group_ids:
+                processed_group_ids.add(group['id'])
+                export_units.append({
+                    'unit_id': group['id'],
+                    'unit_title': group['title'],
+                    'article_ids': [l['id'] for l in group['links']],
+                })
+            elif not group:
+                export_units.append({
+                    'unit_id': article_id,
+                    'unit_title': None,
+                    'article_ids': [article_id],
+                })
+
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for unit in export_units:
+                unit_id = unit['unit_id']
+                unit_title = unit['unit_title']
+                zones = []    # [{anno_id, zone_id, ocr_items}]
+                range_items = []
+
+                # First pass: collect all zones across all articles in the unit
+                for article_id in unit['article_ids']:
+                    anno_path = os.path.join(ANNOTATIONS_DIR, article_id + '.json')
+                    if not os.path.exists(anno_path):
+                        continue
+                    with open(anno_path) as f:
+                        article = json.load(f)
+
+                    if not unit_title:
+                        unit_title = article.get('title', article_id)
+
+                    canvas_id = article.get('canvasId', '')
+
+                    for annotation in article.get('annotations', []):
+                        slug = _region_slug_for_annotation(annotation)
+                        if not slug:
+                            continue
+                        anno_id = annotation['id']
+
+                        ocr_path = os.path.join(OCR_DIR, f'{slug}-{anno_id}.json')
+                        ocr_items = []
+                        if os.path.exists(ocr_path):
+                            with open(ocr_path) as f:
+                                ocr_items = json.load(f).get('annotations', [])
+
+                        zone_id = f'{base_url}/annotations/{unit_id}/{anno_id}'
+                        zones.append({'anno_id': anno_id, 'zone_id': zone_id, 'ocr_items': ocr_items})
+
+                        sel = annotation.get('target', {}).get('selector', {}).get('value', '')
+                        m = re.search(r'xywh=pixel:([\d.]+),([\d.]+),([\d.]+),([\d.]+)', sel)
+                        if m:
+                            x, y, w, h = [round(float(v)) for v in m.groups()]
+                            # {
+                            # "type": "SpecificResource",
+                            # "source": {
+                            # "id": "http://localhost:4000/recipe/0025-newspaper-article-index/canvas/p5",
+                            #  "type": "Canvas"
+                            # },
+                            # "selector": {
+                            #  "type": "FragmentSelector",
+                            # "value": "xywh=1044,104,466,2147"
+                            #   }
+                            # }
+                            range_items.append({
+                                "type":"SpecificResource",
+                                "source": {
+                                    'id': f'{canvas_id}', 
+                                    'type': 'Canvas'
+                                },
+                                "selector": {
+                                    "type": "FragmentSelector",
+                                    "value": f"xywh={x},{y},{w},{h}"
+                                }
+                            })
+
+                # Second pass: write AnnotationPages with partOf and next links
+                collection_id = f'{base_url}/annotations/{unit_id}'
+                for i, zone in enumerate(zones):
+                    page = {
+                        '@context': 'http://iiif.io/api/presentation/3/context.json',
+                        'id': zone['zone_id'],
+                        'type': 'AnnotationPage',
+                        'partOf': [{'id': collection_id, 'type': 'AnnotationCollection'}], # must be an array
+                        **({'next': {'id': zones[i + 1]['zone_id'], 'type': 'AnnotationPage'}} if i < len(zones) - 1 else {}),
+                        'items': zone['ocr_items'],
+                    }
+                    zf.writestr(
+                        f'annotations/{unit_id}/{zone["anno_id"]}.json',
+                        json.dumps(page, indent=2)
+                    )
+
+                # AnnotationCollection with first/last, no items
+                collection = {
+                    '@context': 'http://iiif.io/api/presentation/3/context.json',
+                    'id': collection_id,
+                    'type': 'AnnotationCollection',
+                    'label': {'none': [unit_title or unit_id]},
+                }
+                if zones:
+                    collection['first'] = {'id': zones[0]['zone_id'], 'type': 'AnnotationPage'}
+                    collection['last'] = {'id': zones[-1]['zone_id'], 'type': 'AnnotationPage'}
+                zf.writestr(
+                    f'annotations/{unit_id}.json',
+                    json.dumps(collection, indent=2)
+                )
+
+                # Range for manifest structures
+                structures.append({
+                    'id': f'{base_url}/range/{unit_id}',
+                    'type': 'Range',
+                    'label': {'none': [unit_title or unit_id]},
+                    'items': range_items,
+                    'supplementary': {'id': f"{collection_id}.json", 'type': 'AnnotationCollection'},
+                })
+
+            # Parent "Articles" Range wrapping all article ranges
+            articles_range = {
+                'id': f'{base_url}/range/articles',
+                'type': 'Range',
+                'label': {'none': ['Articles']},
+                'items': structures,
+            }
+            all_structures = [articles_range]
+
+            # manifest.json — append new structures after any existing ones
+            manifest.setdefault('structures', []).extend(all_structures)
+            zf.writestr('manifest.json', json.dumps(manifest, indent=2))
+
+            # structures.json as standalone file
+            zf.writestr('structures.json', json.dumps({
+                '@context': 'http://iiif.io/api/presentation/3/context.json',
+                'structures': all_structures,
+            }, indent=2))
+
+        buf.seek(0)
+        response.content_type = 'application/zip'
+        response.headers['Content-Disposition'] = 'attachment; filename="export.zip"'
+        return buf.read()
+
     @app.route('/api/ocr/<article_id>/word', method='DELETE')
     def delete_ocr_word(article_id):
         annotation_id = request.json['annotationId']
@@ -255,9 +562,10 @@ def create_app():
 
         manifest = requests.get(article['manifestId']).json()
 
+        lang = data.get('lang') or None
         region_slug = region.replace(',', '-')
         base = f"{request.urlparts.scheme}://{request.urlparts.netloc}/api/ocr/{article_id}/{region_slug}/annos/"
-        ocr = OCR(base=base)
+        ocr = OCR(base=base, lang=lang)
         ocr_annos = ocr.ocr_region(manifest, article['canvasId'], region)
         for anno in ocr_annos:
             anno['motivation'] = 'supplementing'
